@@ -1,0 +1,44 @@
+name: Build LeviLab APK
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pick the one correct project zip
+        run: |
+          EXPECT=1ea01ef5020180dcb7c8e6b3d08d37aca07c9016df5521e64940d6408ace37b8
+          ZIP=""; COUNT=0; LAST=""
+          for z in *.zip; do
+            COUNT=$((COUNT+1)); LAST="$z"
+            H="$(unzip -p "$z" app/src/main/java/com/example/ui/StringsProvider.kt 2>/dev/null | sha256sum | cut -d' ' -f1)"
+            echo "$z  size=$(stat -c %s "$z")  correct=$([ "$H" = "$EXPECT" ] && echo YES || echo no)"
+            if [ "$H" = "$EXPECT" ]; then ZIP="$z"; fi
+          done
+          if [ -z "$ZIP" ] && [ "$COUNT" = "1" ]; then ZIP="$LAST"; fi
+          if [ -z "$ZIP" ]; then echo "ERROR: the correct project zip (about 2 MB) is not in the repo. Upload it."; exit 1; fi
+          echo "Using ONLY: $ZIP"
+          rm -rf src && mkdir src
+          unzip -q -o "$ZIP" -d src
+          test -f src/gradle/libs.versions.toml || { echo "ERROR: wrong project layout"; exit 1; }
+          grep -q "kotlin.compose" src/app/build.gradle.kts || { echo "ERROR: build files are not the LeviLab ones"; exit 1; }
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: 17}
+      - run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+      - run: keytool -genkeypair -keystore src/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+      - uses: gradle/actions/setup-gradle@v4
+        with: {gradle-version: 9.3.1, cache-disabled: true}
+      - name: Build (prints only the errors)
+        run: |
+          cd src
+          set +e
+          gradle assembleDebug --console=plain > ../build.log 2>&1
+          CODE=$?
+          echo "=== COMPILE ERRORS (first 40) ==="
+          grep -E "^e: " ../build.log | sed 's#file:///home/runner/work/[^/]*/[^/]*/src/app/src/main/java/##' | head -40
+          echo "=== exit code $CODE ==="
+          exit $CODE
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with: {name: LeviLab-apk, path: "src/app/build/outputs/apk/debug/*.apk"}
+        
